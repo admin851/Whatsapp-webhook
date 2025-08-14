@@ -31,5 +31,6 @@ app.post("/webhook", (req, res) => {
     res.sendStatus(200); // always acknowledge quickly
 });
 
+// ---- Start server ----
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
