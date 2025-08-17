@@ -1,21 +1,18 @@
-const express = require("express");
-const bodyParser = require("body-parser");
-const axios = require("axios");
-require("dotenv").config();
+// server.js
+import express from "express";
+import bodyParser from "body-parser";
+import axios from "axios";
+import dotenv from "dotenv";
 
-const app = express();
-app.use(bodyParser.json());
+dotenv.config();
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_secret_token";
+const app = express().use(bodyParser.json());
+const PORT = process.env.PORT || 3000;
+
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// ✅ Root
-app.get("/", (req, res) => {
-    res.send("WhatsApp Webhook is running ✅");
-});
-
-// ✅ Webhook Verification
+// ✅ Webhook verification
 app.get("/webhook", (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -31,48 +28,82 @@ app.get("/webhook", (req, res) => {
     }
 });
 
-// ✅ Incoming Webhooks
+// ✅ Incoming messages handler
 app.post("/webhook", async (req, res) => {
-    console.log("Incoming webhook:", JSON.stringify(req.body, null, 2));
+    try {
+        const body = req.body;
 
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
+        if (body.object) {
+            const entry = body.entry?.[0];
+            const changes = entry?.changes?.[0];
+            const message = changes?.value?.messages?.[0];
 
-    if (value?.messages && value.messages[0]) {
-        const message = value.messages[0];
-        const from = message.from; // User's WhatsApp ID
-        const text = message.text?.body || "";
+            if (message) {
+                const from = message.from; // user phone number
+                console.log("📩 Received message from:", from);
 
-        console.log(`📩 Message from ${from}: ${text}`);
+                // Instead of plain text → send interactive buttons
+                await sendInteractiveButtons(from);
+            }
 
-        // ✅ Auto-reply
-        try {
-            await axios.post(
-                `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-                {
-                    messaging_product: "whatsapp",
-                    to: from,
-                    text: { body: `👋 Hello! You said: "${text}"` }
-                },
-                {
-                    headers: {
-                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                        "Content-Type": "application/json"
-                    }
-                }
-            );
-            console.log("✅ Auto-reply sent!");
-        } catch (err) {
-            console.error("❌ Error sending reply:", err.response?.data || err.message);
+            res.sendStatus(200);
+        } else {
+            res.sendStatus(404);
         }
+    } catch (error) {
+        console.error("❌ Error handling webhook:", error.message);
+        res.sendStatus(500);
     }
-
-    res.sendStatus(200);
 });
 
-// ✅ Start server
-const PORT = process.env.PORT || 3000;
+// ✅ Send Interactive Buttons
+async function sendInteractiveButtons(to) {
+    try {
+        const response = await axios.post(
+            "https://graph.facebook.com/v19.0/" + process.env.PHONE_NUMBER_ID + "/messages",
+            {
+                messaging_product: "whatsapp",
+                to,
+                type: "interactive",
+                interactive: {
+                    type: "button",
+                    body: {
+                        text: "Hey 👋, choose one option:"
+                    },
+                    action: {
+                        buttons: [
+                            {
+                                type: "reply",
+                                reply: {
+                                    id: "btn_yes",
+                                    title: "Yes ✅"
+                                }
+                            },
+                            {
+                                type: "reply",
+                                reply: {
+                                    id: "btn_no",
+                                    title: "No ❌"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+
+        console.log("✅ Interactive message sent:", response.data);
+    } catch (error) {
+        console.error("❌ Error sending interactive message:", error.response?.data || error.message);
+    }
+}
+
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
 });
