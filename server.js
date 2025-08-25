@@ -1,132 +1,158 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
-import fetch from "node-fetch";
-import fs from "fs";
-import { setTeacherName, exportTimetableAsPDF } from "./sheets.js";
+import axios from "axios";
+import dotenv from "dotenv";
+import { updateTeacherAndExportPDF } from "./sheets.js";
+
+dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-const token = process.env.WHATSAPP_TOKEN;
-const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-const spreadsheetId = process.env.SPREADSHEET_ID;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const SHEET_ID = process.env.SPREADSHEET_ID;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// Track user conversation state
-const userStates = new Map();
+// In-memory state to track which users are waiting for teacher name
+const waitingForTeacher = new Map();
 
-/**
- * Send text message via WhatsApp API
- */
-async function sendText(to, text) {
-    await fetch(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            messaging_product: "whatsapp",
-            to,
-            type: "text",
-            text: { body: text },
-        }),
-    });
-}
-
-/**
- * Send PDF document via WhatsApp API
- */
-async function sendPDF(to, filePath) {
-    const fileData = fs.readFileSync(filePath);
-    const formData = new FormData();
-    formData.append("file", new Blob([fileData]), "timetable.pdf");
-    formData.append("messaging_product", "whatsapp");
-
-    // Step 1: Upload media to WhatsApp
-    const uploadRes = await fetch(
-        `https://graph.facebook.com/v18.0/${phoneNumberId}/media`,
-        {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}` },
-            body: formData,
-        }
-    );
-
-    const uploadJson = await uploadRes.json();
-    if (!uploadJson.id) {
-        console.error("Media upload failed:", uploadJson);
-        return;
-    }
-
-    // Step 2: Send media as message
-    await fetch(`https://graph.facebook.com/v18.0/${phoneNumberId}/messages`, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-            messaging_product: "whatsapp",
-            to,
-            type: "document",
-            document: {
-                id: uploadJson.id,
-                caption: "Here is your timetable 📄",
-                filename: "timetable.pdf",
-            },
-        }),
-    });
-}
-
-app.post("/webhook", async (req, res) => {
-    try {
-        const entry = req.body.entry?.[0]?.changes?.[0]?.value;
-        const message = entry?.messages?.[0];
-        const from = message?.from;
-        const text = message?.text?.body?.trim();
-
-        if (!from || !text) return res.sendStatus(200);
-
-        console.log(`📩 Message from ${from}: ${text}`);
-
-        // If user sends /timetable → ask teacher name
-        if (text.toLowerCase() === "/timetable") {
-            userStates.set(from, { awaitingTeacher: true });
-            await sendText(from, "Please enter the teacher name 🧑‍🏫");
-            return res.sendStatus(200);
-        }
-
-        // If user is awaiting teacher name
-        if (userStates.get(from)?.awaitingTeacher) {
-            userStates.delete(from); // reset state
-            await setTeacherName(spreadsheetId, text);
-            const pdfPath = await exportTimetableAsPDF(spreadsheetId);
-            await sendPDF(from, pdfPath);
-            return res.sendStatus(200);
-        }
-
-        // Default fallback
-        await sendText(from, "Send /timetable to get timetable 📅");
-
-        res.sendStatus(200);
-    } catch (err) {
-        console.error("❌ Error in webhook flow:", err);
-        res.sendStatus(500);
-    }
-});
-
-// Verification for webhook
+// ✅ Webhook verification
 app.get("/webhook", (req, res) => {
-    const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN;
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (mode === "subscribe" && token === verifyToken) {
+    if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+        console.log("Webhook verified ✅");
         res.status(200).send(challenge);
     } else {
         res.sendStatus(403);
     }
 });
 
-app.listen(3000, () => console.log("🚀 Server running on port 3000"));
+// ✅ Webhook to receive messages
+app.post("/webhook", async (req, res) => {
+    const body = req.body;
+
+    if (body.object && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
+        const message = body.entry[0].changes[0].value.messages[0];
+        const from = message.from; // sender's number
+        const msgBody = message.text?.body?.trim() || "";
+
+        console.log(`📩 Message from ${from}: ${msgBody}`);
+
+        // If user sent "/timetable", ask for teacher name
+        if (msgBody.toLowerCase() === "/timetable") {
+            waitingForTeacher.set(from, true);
+
+            await sendWhatsAppMessage(
+                from,
+                "📘 Please enter the *teacher's name* to fetch the timetable."
+            );
+            return res.sendStatus(200);
+        }
+
+        // If user is expected to send teacher name
+        if (waitingForTeacher.get(from)) {
+            const teacherName = msgBody;
+            waitingForTeacher.delete(from); // clear state
+
+            try {
+                const filePath = await updateTeacherAndExportPDF(SHEET_ID, teacherName);
+                console.log(`✅ Timetable PDF generated for ${teacherName}: ${filePath}`);
+
+                await sendWhatsAppDocument(from, filePath, `${teacherName}-timetable.pdf`);
+            } catch (err) {
+                console.error("❌ Failed to generate timetable:", err);
+                await sendWhatsAppMessage(
+                    from,
+                    "⚠️ Sorry, I couldn't generate the timetable. Please try again."
+                );
+            }
+            return res.sendStatus(200);
+        }
+
+        // Otherwise, ignore or send help
+        await sendWhatsAppMessage(from, "❓ Send */timetable* to get started.");
+        return res.sendStatus(200);
+    }
+
+    res.sendStatus(404);
+});
+
+// ✅ Helper: Send plain text message
+async function sendWhatsAppMessage(to, text) {
+    try {
+        await axios.post(
+            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to,
+                text: { body: text },
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+    } catch (err) {
+        console.error("❌ Failed to send WhatsApp message:", err.response?.data || err);
+    }
+}
+
+// ✅ Helper: Send PDF document
+async function sendWhatsAppDocument(to, filePath, fileName) {
+    try {
+        // Step 1: Upload the media
+        const mediaRes = await axios.post(
+            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/media`,
+            {
+                messaging_product: "whatsapp",
+                type: "application/pdf",
+                file: filePath,
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "multipart/form-data",
+                },
+            }
+        );
+
+        const mediaId = mediaRes.data.id;
+
+        // Step 2: Send the media by ID
+        await axios.post(
+            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to,
+                type: "document",
+                document: {
+                    id: mediaId,
+                    filename: fileName,
+                },
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json",
+                },
+            }
+        );
+
+        console.log(`📤 PDF sent to ${to}`);
+    } catch (err) {
+        console.error("❌ Failed to send WhatsApp document:", err.response?.data || err);
+    }
+}
+
+// ✅ Start server
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+});
