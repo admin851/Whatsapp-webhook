@@ -5,8 +5,7 @@ import axios from "axios";
 import dotenv from "dotenv";
 import fs from "fs";
 import FormData from "form-data";
-import { updateCell, exportSheetAsPDF } from "./sheets.js";
-import { convertPDFToImage } from "./utils.js";   // ✅ now using pdf2pic
+import { updateCell, exportSheetAsPDF, cropPDF } from "./sheets.js";
 
 dotenv.config();
 const app = express();
@@ -59,15 +58,15 @@ app.post("/webhook", async (req, res) => {
                 await updateCell(SHEET_ID, "'Print (Teacher)'!A1", teacherName);
 
                 // 2. Export as PDF
-                const pdfPath = `./${from}_timetable.pdf`;
+                const pdfPath = `./${from}_timetable_raw.pdf`;
                 await exportSheetAsPDF(SHEET_ID, PRINT_SHEET_GID, pdfPath);
 
-                // 3. Convert PDF -> Image
-                const imgPath = `./${from}_timetable.png`;
-                await convertPDFToImage(pdfPath, imgPath);
+                // 3. Crop PDF
+                const croppedPath = `./${from}_timetable.pdf`;
+                await cropPDF(pdfPath, croppedPath);
 
-                // 4. Send Image
-                await sendImage(from, imgPath);
+                // 4. Send PDF
+                await sendPDF(from, croppedPath);
 
                 delete userSessions[from]; // reset state
             }
@@ -103,11 +102,11 @@ async function sendText(to, text) {
     );
 }
 
-// ✅ Send Image
-async function sendImage(to, filePath) {
+// ✅ Send PDF document
+async function sendPDF(to, filePath) {
     const formData = new FormData();
     formData.append("file", fs.createReadStream(filePath));
-    formData.append("type", "image");
+    formData.append("type", "document");
     formData.append("messaging_product", "whatsapp");
 
     const uploadRes = await axios.post(
@@ -123,10 +122,10 @@ async function sendImage(to, filePath) {
         {
             messaging_product: "whatsapp",
             to,
-            type: "image",
-            image: {
+            type: "document",
+            document: {
                 id: mediaId,
-                caption: "🖼️ Here is your timetable",
+                caption: "📘 Here is your cropped timetable",
             },
         },
         { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }

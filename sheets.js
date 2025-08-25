@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import fs from "fs";
+import { PDFDocument } from "pdf-lib";
 
 // ✅ Authenticate with Google Sheets using service account JSON file
 function getAuth() {
@@ -48,5 +49,24 @@ export async function exportSheetAsPDF(spreadsheetId, sheetGid, outputPath) {
     });
 
     console.log("✅ PDF exported:", outputPath);
+    return outputPath;
+}
+
+// ✅ Crop PDF (example: cut margins 50px on each side)
+export async function cropPDF(inputPath, outputPath) {
+    const bytes = fs.readFileSync(inputPath);
+    const pdfDoc = await PDFDocument.load(bytes);
+
+    const pages = pdfDoc.getPages();
+    for (const page of pages) {
+        const { width, height } = page.getSize();
+
+        // Example crop: trim 50 from each side
+        page.setCropBox(50, 50, width - 100, height - 100);
+    }
+
+    const croppedBytes = await pdfDoc.save();
+    fs.writeFileSync(outputPath, croppedBytes);
+    console.log("✂️ PDF cropped:", outputPath);
     return outputPath;
 }
