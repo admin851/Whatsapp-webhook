@@ -1,51 +1,60 @@
-import fs from "fs";
+// sheets.js
 import { google } from "googleapis";
+import fs from "fs";
+import path from "path";
 
-const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY),
-    scopes: ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
-});
-
-const sheets = google.sheets({ version: "v4", auth });
-const drive = google.drive({ version: "v3", auth });
-
-/**
- * Writes teacher name in A1 of "Print (Teacher)" sheet
- */
-export async function setTeacherName(spreadsheetId, teacherName) {
-    await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: "Print (Teacher)!A1",
-        valueInputOption: "RAW",
-        requestBody: {
-            values: [[teacherName]],
-        },
+// Authenticate with Google Sheets using service account JSON file
+function getAuth() {
+    return new google.auth.GoogleAuth({
+        keyFile: process.env.GOOGLE_CREDENTIALS_PATH, // path to service account file
+        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
     });
 }
 
-/**
- * Exports timetable sheet as PDF and saves locally
- */
-export async function exportTimetableAsPDF(spreadsheetId, sheetGid = "0") {
-    const destPath = "./timetable.pdf";
-    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?` +
-        new URLSearchParams({
-            format: "pdf",
-            portrait: "false",
-            size: "A4",
-            gid: sheetGid,
-        });
+// ✅ Update teacher name in A1 and export as PDF
+export async function updateTeacherAndExportPDF(spreadsheetId, teacherName) {
+    const auth = await getAuth();
+    const sheets = google.sheets({ version: "v4", auth });
 
-    const res = await drive.files.export(
-        { fileId: spreadsheetId, mimeType: "application/pdf" },
-        { responseType: "stream" }
-    );
-
-    return new Promise((resolve, reject) => {
-        const dest = fs.createWriteStream(destPath);
-        res.data
-            .on("end", () => resolve(destPath))
-            .on("error", reject)
-            .pipe(dest);
+    // Step 1: Update A1 with teacher name
+    await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "'Print (Teacher)'!A1",
+        valueInputOption: "USER_ENTERED",
+        resource: {
+            values: [[teacherName]],
+        },
     });
+
+    console.log(`✏️ Updated 'Print (Teacher)'!A1 with ${teacherName}`);
+
+    // Step 2: Export as PDF using Drive API
+    const drive = google.drive({ version: "v3", auth });
+    const destPath = path.resolve(`./timetable.pdf`);
+    const dest = fs.createWriteStream(destPath);
+
+    await new Promise((resolve, reject) => {
+        drive.files
+            .export(
+                {
+                    fileId: spreadsheetId,
+                    mimeType: "application/pdf",
+                },
+                { responseType: "stream" }
+            )
+            .then((res) => {
+                res.data
+                    .on("end", () => {
+                        console.log(`✅ PDF saved at ${destPath}`);
+                        resolve();
+                    })
+                    .on("error", (err) => {
+                        console.error("❌ Error downloading PDF:", err);
+                        reject(err);
+                    })
+                    .pipe(dest);
+            });
+    });
+
+    return destPath;
 }
