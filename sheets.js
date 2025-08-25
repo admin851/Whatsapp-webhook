@@ -52,21 +52,33 @@ export async function exportSheetAsPDF(spreadsheetId, sheetGid, outputPath) {
     return outputPath;
 }
 
-// ✅ Crop PDF (example: cut margins 50px on each side)
+// ✅ Crop PDF using values from .env
 export async function cropPDF(inputPath, outputPath) {
     const bytes = fs.readFileSync(inputPath);
     const pdfDoc = await PDFDocument.load(bytes);
+
+    // Read crop margins from .env (default 0 if not set)
+    const cutLeft = parseInt(process.env.CROP_LEFT || "0", 10);
+    const cutRight = parseInt(process.env.CROP_RIGHT || "0", 10);
+    const cutTop = parseInt(process.env.CROP_TOP || "0", 10);
+    const cutBottom = parseInt(process.env.CROP_BOTTOM || "0", 10);
 
     const pages = pdfDoc.getPages();
     for (const page of pages) {
         const { width, height } = page.getSize();
 
-        // Example crop: trim 50 from each side
-        page.setCropBox(50, 50, width - 100, height - 100);
+        const left = cutLeft;
+        const bottom = cutBottom;
+        const newWidth = width - cutLeft - cutRight;
+        const newHeight = height - cutTop - cutBottom;
+
+        page.setCropBox(left, bottom, newWidth, newHeight);
     }
 
     const croppedBytes = await pdfDoc.save();
     fs.writeFileSync(outputPath, croppedBytes);
-    console.log("✂️ PDF cropped:", outputPath);
+    console.log(
+        `✂️ PDF cropped with margins L:${cutLeft} R:${cutRight} T:${cutTop} B:${cutBottom} → ${outputPath}`
+    );
     return outputPath;
 }
