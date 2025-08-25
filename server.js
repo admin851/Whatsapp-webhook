@@ -31,19 +31,28 @@ app.post("/webhook", async (req, res) => {
         if (body.object === "whatsapp_business_account") {
             const entry = body.entry?.[0];
             const changes = entry?.changes?.[0];
-            const messages = changes?.value?.messages;
+            const value = changes?.value;
 
-            if (messages && messages[0]) {
-                const from = messages[0].from;
-                const text = messages[0].text?.body?.toLowerCase() || "";
+            // ✅ User sent a message
+            if (value?.messages && value.messages[0]) {
+                const message = value.messages[0];
+                const from = message.from;
+                const text = message.text?.body?.toLowerCase() || "";
 
-                if (text.includes("timetable")) {
+                console.log("📩 Message from", from, ":", text);
+
+                if (text.includes("timetable") || text.startsWith("/timetable")) {
                     const outputPath = `./timetable_${Date.now()}.png`;
                     await exportRangeAsPNG(SPREADSHEET_ID, "408465234", outputPath);
 
                     await sendImage(from, outputPath);
                     fs.unlinkSync(outputPath);
                 }
+            }
+
+            // ✅ Delivery/read receipts (ignore)
+            else if (value?.statuses) {
+                console.log("ℹ️ Status update:", value.statuses[0].status);
             }
         }
 
@@ -53,6 +62,7 @@ app.post("/webhook", async (req, res) => {
         res.sendStatus(500);
     }
 });
+
 
 // ✅ send image via WhatsApp
 async function sendImage(to, filePath) {
