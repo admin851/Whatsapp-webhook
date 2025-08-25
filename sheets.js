@@ -1,33 +1,51 @@
 import fs from "fs";
 import { google } from "googleapis";
-import sharp from "sharp";
 
-export async function exportRangeAsImage(spreadsheetId, sheetGid, outputPath) {
-    const auth = new google.auth.GoogleAuth({
-        keyFile: "credentials.json", // service account JSON
-        scopes: ["https://www.googleapis.com/auth/drive.readonly"],
-    });
+const auth = new google.auth.GoogleAuth({
+    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY),
+    scopes: ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"],
+});
 
-    const drive = google.drive({ version: "v3", auth });
+const sheets = google.sheets({ version: "v4", auth });
+const drive = google.drive({ version: "v3", auth });
 
-    // 1. Export as PDF
-    const res = await drive.files.export(
-        {
-            fileId: spreadsheetId,
-            mimeType: "application/pdf",
+/**
+ * Writes teacher name in A1 of "Print (Teacher)" sheet
+ */
+export async function setTeacherName(spreadsheetId, teacherName) {
+    await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: "Print (Teacher)!A1",
+        valueInputOption: "RAW",
+        requestBody: {
+            values: [[teacherName]],
         },
-        { responseType: "arraybuffer" }
+    });
+}
+
+/**
+ * Exports timetable sheet as PDF and saves locally
+ */
+export async function exportTimetableAsPDF(spreadsheetId, sheetGid = "0") {
+    const destPath = "./timetable.pdf";
+    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?` +
+        new URLSearchParams({
+            format: "pdf",
+            portrait: "false",
+            size: "A4",
+            gid: sheetGid,
+        });
+
+    const res = await drive.files.export(
+        { fileId: spreadsheetId, mimeType: "application/pdf" },
+        { responseType: "stream" }
     );
 
-    const pdfPath = outputPath.replace(".png", ".pdf");
-    fs.writeFileSync(pdfPath, Buffer.from(res.data));
-    console.log(`✅ PDF saved at ${pdfPath}`);
-
-    // 2. Convert PDF → PNG (no crop/resize)
-    await sharp(pdfPath, { density: 300 }) // high resolution
-        .png()
-        .toFile(outputPath);
-
-    console.log(`✅ PNG saved at ${outputPath}`);
-    return outputPath;
+    return new Promise((resolve, reject) => {
+        const dest = fs.createWriteStream(destPath);
+        res.data
+            .on("end", () => resolve(destPath))
+            .on("error", reject)
+            .pipe(dest);
+    });
 }
