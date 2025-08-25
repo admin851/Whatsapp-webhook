@@ -14,7 +14,7 @@ export async function convertPDFToImage(pdfPath, outputPath) {
     const storeAsImage = fromPath(pdfPath, options);
 
     try {
-        const result = await storeAsImage(1, true); // convert page 1
+        const result = await storeAsImage(1); // ✅ FIX: removed `true`
         console.log("✅ PDF converted to image:", result.path);
         return result.path;
     } catch (err) {
