@@ -125,7 +125,8 @@ async function sendPDF(to, filePath) {
             type: "document",
             document: {
                 id: mediaId,
-                caption: "📘 Here is your cropped timetable",
+                caption: "Here is your timetable 📘",
+                filename: "Timetable.pdf",
             },
         },
         { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
