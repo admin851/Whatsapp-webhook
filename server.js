@@ -1,59 +1,79 @@
 import express from "express";
 import bodyParser from "body-parser";
-import { exportRangeAsPNG } from "./sheets.js";
-import fs from "fs";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
+import { exportRangeAsImage } from "./sheets.js";
+
+dotenv.config();
 
 const app = express();
 app.use(bodyParser.json());
 
-// ENV variables
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const TIMETABLE_GID = process.env.TIMETABLE_GID || 0;
 
+// ✅ Webhook verification
 app.get("/webhook", (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    if (mode && token === VERIFY_TOKEN) {
+    if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
+        console.log("✅ Webhook verified!");
         res.status(200).send(challenge);
     } else {
         res.sendStatus(403);
     }
 });
 
+// ✅ Webhook receiver
 app.post("/webhook", async (req, res) => {
     try {
-        const body = req.body;
-        console.log("Webhook received:", JSON.stringify(body, null, 2));
+        const entry = req.body.entry?.[0]?.changes?.[0]?.value;
+        const message = entry?.messages?.[0];
 
-        if (body.object === "whatsapp_business_account") {
-            const entry = body.entry?.[0];
-            const changes = entry?.changes?.[0];
-            const value = changes?.value;
+        if (message?.text?.body?.toLowerCase() === "/timetable") {
+            const from = message.from;
 
-            // ✅ User sent a message
-            if (value?.messages && value.messages[0]) {
-                const message = value.messages[0];
-                const from = message.from;
-                const text = message.text?.body?.toLowerCase() || "";
+            // Export timetable to PNG
+            const imgPath = "./timetable.png";
+            await exportRangeAsImage(SPREADSHEET_ID, TIMETABLE_GID, imgPath);
 
-                console.log("📩 Message from", from, ":", text);
-
-                if (text.includes("timetable") || text.startsWith("/timetable")) {
-                    const outputPath = `./timetable_${Date.now()}.png`;
-                    await exportRangeAsPNG(SPREADSHEET_ID, "408465234", outputPath);
-
-                    await sendImage(from, outputPath);
-                    fs.unlinkSync(outputPath);
+            // Upload image to WhatsApp
+            const mediaRes = await fetch(
+                `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`,
+                {
+                    method: "POST",
+                    headers: {
+                        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    },
+                    body: new URLSearchParams({
+                        messaging_product: "whatsapp",
+                        type: "image/png",
+                        file: fs.createReadStream(imgPath), // stream upload
+                    }),
                 }
-            }
+            );
+            const mediaData = await mediaRes.json();
+            console.log("Media upload response:", mediaData);
 
-            // ✅ Delivery/read receipts (ignore)
-            else if (value?.statuses) {
-                console.log("ℹ️ Status update:", value.statuses[0].status);
-            }
+            // Send message with uploaded image
+            await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                },
+                body: JSON.stringify({
+                    messaging_product: "whatsapp",
+                    to: from,
+                    type: "image",
+                    image: { id: mediaData.id },
+                }),
+            });
         }
 
         res.sendStatus(200);
@@ -63,33 +83,5 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-
-// ✅ send image via WhatsApp
-async function sendImage(to, filePath) {
-    const url = "https://graph.facebook.com/v20.0/me/messages";
-    const data = {
-        messaging_product: "whatsapp",
-        to,
-        type: "image",
-        image: {
-            link: `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/static/${filePath.split("/").pop()}`
-        },
-    };
-
-    await fetch(url, {
-        method: "POST",
-        headers: {
-            "Authorization": `Bearer ${WHATSAPP_TOKEN}`,
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
-    });
-
-    console.log("📤 Image sent to", to);
-}
-
-// Serve static files (images)
-app.use("/static", express.static("./"));
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on ${PORT}`));

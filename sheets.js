@@ -1,45 +1,33 @@
 import fs from "fs";
-import path from "path";
 import { google } from "googleapis";
 import sharp from "sharp";
 
-const KEYFILEPATH = "./credentials.json"; // your service account key
-
-// Auth
-async function getAuth() {
-    return new google.auth.GoogleAuth({
-        keyFile: KEYFILEPATH,
-        scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"],
+export async function exportRangeAsImage(spreadsheetId, sheetGid, outputPath) {
+    const auth = new google.auth.GoogleAuth({
+        keyFile: "credentials.json", // service account JSON
+        scopes: ["https://www.googleapis.com/auth/drive.readonly"],
     });
-}
 
-// ✅ Export timetable as PNG (not PDF)
-export async function exportRangeAsPNG(spreadsheetId, sheetGid, outputPngPath) {
-    const auth = await getAuth();
-    const client = await auth.getClient();
+    const drive = google.drive({ version: "v3", auth });
 
-    const url =
-        `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?` +
-        `format=pdf&gid=${encodeURIComponent(sheetGid)}&range=A1:J16` +
-        `&size=A4&portrait=false&fitw=true&scale=4` +
-        `&top_margin=0.00&bottom_margin=0.00&left_margin=0.00&right_margin=0.00` +
-        `&horizontal_alignment=CENTER&vertical_alignment=CENTER` +
-        `&gridlines=false&printtitle=false&sheetnames=false&pagenum=UNDEFINED`;
+    // 1. Export as PDF
+    const res = await drive.files.export(
+        {
+            fileId: spreadsheetId,
+            mimeType: "application/pdf",
+        },
+        { responseType: "arraybuffer" }
+    );
 
-    const pdfTmp = path.resolve(`./tmp_export_${Date.now()}.pdf`);
-    const res = await client.request({ url, responseType: "arraybuffer" });
-    fs.writeFileSync(pdfTmp, Buffer.from(res.data));
+    const pdfPath = outputPath.replace(".png", ".pdf");
+    fs.writeFileSync(pdfPath, Buffer.from(res.data));
+    console.log(`✅ PDF saved at ${pdfPath}`);
 
-    // Convert PDF → PNG
-    await sharp(pdfTmp, { density: 300, page: 0 })
+    // 2. Convert PDF → PNG (no crop/resize)
+    await sharp(pdfPath, { density: 300 }) // high resolution
         .png()
-        .toFile(outputPngPath);
+        .toFile(outputPath);
 
-    console.log("✅ PNG exported:", outputPngPath);
-
-    try {
-        fs.unlinkSync(pdfTmp);
-    } catch { }
-
-    return outputPngPath;
+    console.log(`✅ PNG saved at ${outputPath}`);
+    return outputPath;
 }
