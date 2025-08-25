@@ -3,20 +3,24 @@ import express from "express";
 import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
-import { updateTeacherAndExportPDF } from "./sheets.js";
+import fs from "fs";
+import FormData from "form-data";
+import { updateCell, exportSheetAsPDF } from "./sheets.js";
+import { convertPDFToImage } from "./utils.js";
 
 dotenv.config();
-
 const app = express();
 app.use(bodyParser.json());
 
+// 🔑 Env vars
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const SHEET_ID = process.env.SPREADSHEET_ID;
+const PRINT_SHEET_GID = process.env.PRINT_SHEET_GID;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// In-memory state to track which users are waiting for teacher name
-const waitingForTeacher = new Map();
+// In-memory conversation state
+const userSessions = {};
 
 // ✅ Webhook verification
 app.get("/webhook", (req, res) => {
@@ -38,117 +42,95 @@ app.post("/webhook", async (req, res) => {
 
     if (body.object && body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]) {
         const message = body.entry[0].changes[0].value.messages[0];
-        const from = message.from; // sender's number
+        const from = message.from;
         const msgBody = message.text?.body?.trim() || "";
 
         console.log(`📩 Message from ${from}: ${msgBody}`);
 
-        // If user sent "/timetable", ask for teacher name
-        if (msgBody.toLowerCase() === "/timetable") {
-            waitingForTeacher.set(from, true);
-
-            await sendWhatsAppMessage(
-                from,
-                "📘 Please enter the *teacher's name* to fetch the timetable."
-            );
-            return res.sendStatus(200);
-        }
-
-        // If user is expected to send teacher name
-        if (waitingForTeacher.get(from)) {
-            const teacherName = msgBody;
-            waitingForTeacher.delete(from); // clear state
-
-            try {
-                const filePath = await updateTeacherAndExportPDF(SHEET_ID, teacherName);
-                console.log(`✅ Timetable PDF generated for ${teacherName}: ${filePath}`);
-
-                await sendWhatsAppDocument(from, filePath, `${teacherName}-timetable.pdf`);
-            } catch (err) {
-                console.error("❌ Failed to generate timetable:", err);
-                await sendWhatsAppMessage(
-                    from,
-                    "⚠️ Sorry, I couldn't generate the timetable. Please try again."
-                );
+        try {
+            if (msgBody === "/timetable") {
+                userSessions[from] = { step: "awaiting_teacher" };
+                await sendText(from, "Please write teacher name");
             }
-            return res.sendStatus(200);
+            else if (userSessions[from]?.step === "awaiting_teacher") {
+                const teacherName = msgBody;
+
+                // 1. Update A1
+                await updateCell(SHEET_ID, "'Print (Teacher)'!A1", teacherName);
+
+                // 2. Export as PDF
+                const pdfPath = `./${from}_timetable.pdf`;
+                await exportSheetAsPDF(SHEET_ID, PRINT_SHEET_GID, pdfPath);
+
+                // 3. Convert PDF -> Image
+                const imgPath = `./${from}_timetable.png`;
+                await convertPDFToImage(pdfPath, imgPath);
+
+                // 4. Send Image
+                await sendImage(from, imgPath);
+
+                delete userSessions[from]; // reset state
+            }
+            else {
+                await sendText(from, "Send /timetable to get started.");
+            }
+        } catch (err) {
+            console.error("❌ Error in flow:", err);
+            await sendText(from, "Something went wrong. Please try again later.");
         }
 
-        // Otherwise, ignore or send help
-        await sendWhatsAppMessage(from, "❓ Send */timetable* to get started.");
-        return res.sendStatus(200);
+        res.sendStatus(200);
+    } else {
+        res.sendStatus(404);
     }
-
-    res.sendStatus(404);
 });
 
-// ✅ Helper: Send plain text message
-async function sendWhatsAppMessage(to, text) {
-    try {
-        await axios.post(
-            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to,
-                text: { body: text },
+// ✅ Send plain text message
+async function sendText(to, text) {
+    await axios.post(
+        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+        {
+            messaging_product: "whatsapp",
+            to,
+            text: { body: text },
+        },
+        {
+            headers: {
+                Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                "Content-Type": "application/json",
             },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "application/json",
-                },
-            }
-        );
-    } catch (err) {
-        console.error("❌ Failed to send WhatsApp message:", err.response?.data || err);
-    }
+        }
+    );
 }
 
-// ✅ Helper: Send PDF document
-async function sendWhatsAppDocument(to, filePath, fileName) {
-    try {
-        // Step 1: Upload the media
-        const mediaRes = await axios.post(
-            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/media`,
-            {
-                messaging_product: "whatsapp",
-                type: "application/pdf",
-                file: filePath,
+// ✅ Send Image
+async function sendImage(to, filePath) {
+    const formData = new FormData();
+    formData.append("file", fs.createReadStream(filePath));
+    formData.append("type", "image");
+    formData.append("messaging_product", "whatsapp");
+
+    const uploadRes = await axios.post(
+        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/media`,
+        formData,
+        { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, ...formData.getHeaders() } }
+    );
+
+    const mediaId = uploadRes.data.id;
+
+    await axios.post(
+        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+        {
+            messaging_product: "whatsapp",
+            to,
+            type: "image",
+            image: {
+                id: mediaId,
+                caption: "🖼️ Here is your timetable",
             },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "multipart/form-data",
-                },
-            }
-        );
-
-        const mediaId = mediaRes.data.id;
-
-        // Step 2: Send the media by ID
-        await axios.post(
-            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-            {
-                messaging_product: "whatsapp",
-                to,
-                type: "document",
-                document: {
-                    id: mediaId,
-                    filename: fileName,
-                },
-            },
-            {
-                headers: {
-                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                    "Content-Type": "application/json",
-                },
-            }
-        );
-
-        console.log(`📤 PDF sent to ${to}`);
-    } catch (err) {
-        console.error("❌ Failed to send WhatsApp document:", err.response?.data || err);
-    }
+        },
+        { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
+    );
 }
 
 // ✅ Start server

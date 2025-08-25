@@ -1,60 +1,52 @@
-// sheets.js
 import { google } from "googleapis";
 import fs from "fs";
-import path from "path";
 
-// Authenticate with Google Sheets using service account JSON file
+// ✅ Authenticate with Google Sheets using service account JSON file
 function getAuth() {
     return new google.auth.GoogleAuth({
-        keyFile: process.env.GOOGLE_CREDENTIALS_PATH, // path to service account file
-        scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+        keyFile: process.env.GOOGLE_CREDENTIALS_PATH,
+        scopes: [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ],
     });
 }
 
-// ✅ Update teacher name in A1 and export as PDF
-export async function updateTeacherAndExportPDF(spreadsheetId, teacherName) {
+// ✅ Update a single cell (overwrite A1 with teacher name)
+export async function updateCell(spreadsheetId, range, value) {
     const auth = await getAuth();
     const sheets = google.sheets({ version: "v4", auth });
 
-    // Step 1: Update A1 with teacher name
+    // First clear the range
+    await sheets.spreadsheets.values.clear({
+        spreadsheetId,
+        range,
+    });
+
+    // Then write value
     await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: "'Print (Teacher)'!A1",
+        range,
         valueInputOption: "USER_ENTERED",
-        resource: {
-            values: [[teacherName]],
-        },
+        resource: { values: [[value]] }
     });
 
-    console.log(`✏️ Updated 'Print (Teacher)'!A1 with ${teacherName}`);
+    console.log(`✅ Updated ${range} with ${value}`);
+}
 
-    // Step 2: Export as PDF using Drive API
-    const drive = google.drive({ version: "v3", auth });
-    const destPath = path.resolve(`./timetable.pdf`);
-    const dest = fs.createWriteStream(destPath);
+// ✅ Export defined range as PDF
+export async function exportSheetAsPDF(spreadsheetId, sheetGid, outputPath) {
+    const auth = await getAuth();
 
+    const url = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=pdf&gid=${sheetGid}&range=A1:J16`;
+
+    const res = await auth.request({ url, responseType: "stream" });
+
+    const dest = fs.createWriteStream(outputPath);
     await new Promise((resolve, reject) => {
-        drive.files
-            .export(
-                {
-                    fileId: spreadsheetId,
-                    mimeType: "application/pdf",
-                },
-                { responseType: "stream" }
-            )
-            .then((res) => {
-                res.data
-                    .on("end", () => {
-                        console.log(`✅ PDF saved at ${destPath}`);
-                        resolve();
-                    })
-                    .on("error", (err) => {
-                        console.error("❌ Error downloading PDF:", err);
-                        reject(err);
-                    })
-                    .pipe(dest);
-            });
+        res.data.pipe(dest).on("finish", resolve).on("error", reject);
     });
 
-    return destPath;
+    console.log("✅ PDF exported:", outputPath);
+    return outputPath;
 }
