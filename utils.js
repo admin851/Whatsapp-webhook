@@ -1,18 +1,22 @@
-import pdf from "pdf-poppler";
+import { fromPath } from "pdf2pic";
 import path from "path";
 
-// Convert first page of PDF to PNG
 export async function convertPDFToImage(pdfPath, outputPath) {
-    const opts = {
+    const options = {
+        density: 150,   // DPI (higher = clearer, bigger file)
+        saveFilename: path.basename(outputPath, path.extname(outputPath)),
+        savePath: path.dirname(outputPath),
         format: "png",
-        out_dir: path.dirname(outputPath),
-        out_prefix: path.basename(outputPath, path.extname(outputPath)),
-        page: 1,
+        width: 1000,    // adjust as needed
+        height: 1414,
     };
 
+    const storeAsImage = fromPath(pdfPath, options);
+
     try {
-        await pdf.convert(pdfPath, opts);
-        console.log("✅ PDF converted to image:", outputPath);
+        const result = await storeAsImage(1, true); // convert page 1
+        console.log("✅ PDF converted to image:", result.path);
+        return result.path;
     } catch (err) {
         console.error("❌ PDF to Image conversion failed:", err);
         throw err;

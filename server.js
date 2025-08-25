@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 import fs from "fs";
 import FormData from "form-data";
 import { updateCell, exportSheetAsPDF } from "./sheets.js";
-import { convertPDFToImage } from "./utils.js";
+import { convertPDFToImage } from "./utils.js";   // ✅ now using pdf2pic
 
 dotenv.config();
 const app = express();
