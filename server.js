@@ -40,7 +40,7 @@ app.post("/webhook", async (req, res) => {
 
         try {
             // Always reply with same text
-            await sendText(from, "Hi, thank you for your corporation.");
+            await sendText(from, "We got your message—thanks for reaching out!😊");
         } catch (err) {
             console.error("❌ Error in sending message:", err);
         }
