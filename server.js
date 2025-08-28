@@ -3,9 +3,6 @@ import express from "express";
 import bodyParser from "body-parser";
 import axios from "axios";
 import dotenv from "dotenv";
-import fs from "fs";
-import FormData from "form-data";
-import { updateCell, exportSheetAsPDF, cropPDF } from "./sheets.js";
 
 dotenv.config();
 const app = express();
@@ -14,12 +11,7 @@ app.use(bodyParser.json());
 // 🔑 Env vars
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-const SHEET_ID = process.env.SPREADSHEET_ID;
-const PRINT_SHEET_GID = process.env.PRINT_SHEET_GID;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-
-// In-memory conversation state
-const userSessions = {};
 
 // ✅ Webhook verification
 app.get("/webhook", (req, res) => {
@@ -47,35 +39,10 @@ app.post("/webhook", async (req, res) => {
         console.log(`📩 Message from ${from}: ${msgBody}`);
 
         try {
-            if (msgBody === "/timetable") {
-                userSessions[from] = { step: "awaiting_teacher" };
-                await sendText(from, "Please write teacher name");
-            }
-            else if (userSessions[from]?.step === "awaiting_teacher") {
-                const teacherName = msgBody;
-
-                // 1. Update A1
-                await updateCell(SHEET_ID, "'Print (Teacher)'!A1", teacherName);
-
-                // 2. Export as PDF
-                const pdfPath = `./${from}_timetable_raw.pdf`;
-                await exportSheetAsPDF(SHEET_ID, PRINT_SHEET_GID, pdfPath);
-
-                // 3. Crop PDF
-                const croppedPath = `./${from}_timetable.pdf`;
-                await cropPDF(pdfPath, croppedPath);
-
-                // 4. Send PDF
-                await sendPDF(from, croppedPath);
-
-                delete userSessions[from]; // reset state
-            }
-            else {
-                await sendText(from, "Send /timetable to get started.");
-            }
+            // Always reply with same text
+            await sendText(from, "Hi, thank you for your corporation.");
         } catch (err) {
-            console.error("❌ Error in flow:", err);
-            await sendText(from, "Something went wrong. Please try again later.");
+            console.error("❌ Error in sending message:", err);
         }
 
         res.sendStatus(200);
@@ -99,37 +66,6 @@ async function sendText(to, text) {
                 "Content-Type": "application/json",
             },
         }
-    );
-}
-
-// ✅ Send PDF document
-async function sendPDF(to, filePath) {
-    const formData = new FormData();
-    formData.append("file", fs.createReadStream(filePath));
-    formData.append("type", "document");
-    formData.append("messaging_product", "whatsapp");
-
-    const uploadRes = await axios.post(
-        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/media`,
-        formData,
-        { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}`, ...formData.getHeaders() } }
-    );
-
-    const mediaId = uploadRes.data.id;
-
-    await axios.post(
-        `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
-        {
-            messaging_product: "whatsapp",
-            to,
-            type: "document",
-            document: {
-                id: mediaId,
-                caption: "Here is your timetable 📘",
-                filename: "Timetable.pdf",
-            },
-        },
-        { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } }
     );
 }
 
