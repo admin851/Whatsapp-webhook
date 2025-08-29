@@ -68,7 +68,7 @@ app.post("/send", async (req, res) => {
                 type: "template",
                 template: {
                     name: "staff_feedback_update",
-                    language: { code: "en_US" },
+                    language: { code: "en" },
                     components: [
                         {
                             type: "body",
