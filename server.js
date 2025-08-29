@@ -13,7 +13,7 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
-// ✅ Webhook verification
+// ✅ Webhook verification (for Meta)
 app.get("/webhook", (req, res) => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
@@ -27,7 +27,7 @@ app.get("/webhook", (req, res) => {
     }
 });
 
-// ✅ Webhook to receive messages
+// ✅ Incoming messages (optional, just for debugging)
 app.post("/webhook", async (req, res) => {
     const body = req.body;
 
@@ -36,13 +36,12 @@ app.post("/webhook", async (req, res) => {
         const from = message.from;
         const msgBody = message.text?.body?.trim() || "";
 
-        console.log(`📩 Message from ${from}: ${msgBody}`);
+        console.log(`📩 Incoming message from ${from}: ${msgBody}`);
 
         try {
-            // Always reply with same text
             await sendText(from, "We got your message—thanks for reaching out!😊");
         } catch (err) {
-            console.error("❌ Error in sending message:", err);
+            console.error("❌ Error replying:", err.response?.data || err.message);
         }
 
         res.sendStatus(200);
@@ -51,20 +50,63 @@ app.post("/webhook", async (req, res) => {
     }
 });
 
-// ✅ Send plain text message
+// ✅ Apps Script → POST /send
+app.post("/send", async (req, res) => {
+    try {
+        const { to, variables } = req.body;
+
+        if (!to || !variables) {
+            return res.status(400).json({ error: "Missing 'to' or 'variables'" });
+        }
+
+        // Send template message
+        const response = await axios.post(
+            `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
+            {
+                messaging_product: "whatsapp",
+                to,
+                type: "template",
+                template: {
+                    name: "staff_feedback_update",
+                    language: { code: "en_US" },
+                    components: [
+                        {
+                            type: "body",
+                            parameters: variables.map(v => ({ type: "text", text: v }))
+                        }
+                    ]
+                }
+            },
+            {
+                headers: {
+                    Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+
+        console.log(`✅ Sent to ${to}`, response.data);
+        res.json({ success: true });
+    } catch (err) {
+        console.error("❌ Error sending WhatsApp template:", err.response?.data || err.message);
+        res.status(500).json({ error: "Failed to send template" });
+    }
+});
+
+// ✅ Send plain text helper
 async function sendText(to, text) {
-    await axios.post(
+    return axios.post(
         `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`,
         {
             messaging_product: "whatsapp",
             to,
-            text: { body: text },
+            text: { body: text }
         },
         {
             headers: {
                 Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                "Content-Type": "application/json",
-            },
+                "Content-Type": "application/json"
+            }
         }
     );
 }
